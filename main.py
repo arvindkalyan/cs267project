@@ -8,9 +8,17 @@ import os
 import random
 import numpy as np
 import torch
+import torch.nn as nn
 import pyro
+import pyro.distributions as dist
 import networkx as nx
 from sklearn.model_selection import train_test_split
+from pyro.nn import PyroModule, PyroSample
+from pyro.infer import SVI
+
+# For sanity check without training:
+from pyro.infer.autoguide import AutoDiagonalNormal
+from pyro.infer import Trace_ELBO
 
 # Set random seeds for reproducibility
 RANDOM_SEED = 42
@@ -222,20 +230,39 @@ class FacebookEgoNetwork:
         return X_train, y_train, X_test, y_test
 
 
-class BayesianLogisticRegression:
-    """Bayesian logistic regression model for link prediction using Pyro"""
-
+class BayesianLogisticRegression(PyroModule):
     def __init__(self, input_dim):
-        """
-        Initialize the model
+        super().__init__()
+        self.linear = PyroModule[nn.Linear](input_dim, 1)
+        self.linear.weight = PyroSample(dist.Normal(0., 1.).expand([1, input_dim]).to_event(2))
+        self.linear.bias = PyroSample(dist.Normal(0., 10.).expand([1]).to_event(1))
 
-        Args:
-            input_dim: Dimension of input features
-        """
-        self.input_dim = input_dim
+    def forward(self, x, y=None):
+        logits = self.linear(x).squeeze(-1)
+        with pyro.plate("data", x.shape[0]):
+            obs = pyro.sample("obs", dist.Bernoulli(logits=logits), obs=y)
+        return logits
 
+def train_bayesian_lr(model, X_train, y_train, num_steps=5000):
+    guide = pyro.infer.autoguide.AutoDiagonalNormal(model)
+    optim = pyro.optim.Adam({"lr": 0.01})
+    svi = pyro.infer.SVI(model, guide, optim, loss=pyro.infer.Trace_ELBO())
 
-# TODO
+    pyro.clear_param_store()
+    for step in range(num_steps):
+        loss = svi.step(X_train, y_train)
+        if step % 500 == 0:
+            print(f"[Step {step}] Loss: {loss:.4f}")
+    return guide
+
+def evaluate(model, guide, X_test, y_test):
+    predictive = pyro.infer.Predictive(model, guide=guide, num_samples=1000)
+    samples = predictive(X_test)
+    probs = samples["obs"].float().mean(dim=0)
+
+    y_pred = (probs > 0.5).float()
+    accuracy = (y_pred == y_test).float().mean().item()
+    print(f"Accuracy: {accuracy:.4f}")
 
 
 def main():
@@ -259,10 +286,29 @@ def main():
             f"Generated {len(X_train)} training examples and {len(X_test)} testing examples"
         )
 
-        # Initialize and train the model
-        # TODO
+        # Initialize Bayesian logistic regression model (sanity check without training)
+        model = BayesianLogisticRegression(input_dim=X_train.shape[1])
 
-    except FileNotFoundError as e:
+        # approximate posterior
+        guide = AutoDiagonalNormal(model)
+
+        optimizer = pyro.optim.Adam({"lr": 0.01})
+        elbo = Trace_ELBO()
+        svi = SVI(model, guide, optimizer, loss=elbo)
+
+        # perform one step of inference
+        try:
+            loss = svi.step(X_train, y_train)
+            print(f"[Sanity Check] Initial ELBO loss after one step: {loss:.4f}")
+        except Exception as e:
+            print(f"[Sanity Check] Failed with error: {e}")
+
+
+        # uncomment to train and evaluate
+        # guide = train_bayesian_lr(model, X_train, y_train, num_steps=1000)
+        # evaluate(model, guide, X_test, y_test)
+
+    except Exception as e:
         print(f"Error: {e}")
         print(
             "Please check that the Facebook ego network data files are in the correct directory."
