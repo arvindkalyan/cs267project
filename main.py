@@ -250,7 +250,7 @@ def train_bayesian_lr(model, X_train, y_train, num_steps=5000):
 
     pyro.clear_param_store()
     for step in range(num_steps):
-        loss = svi.step(X_train, y_train)
+        loss = svi.step(X_train, y_train) / X_train.shape[0]
         if step % 500 == 0:
             print(f"[Step {step}] Loss: {loss:.4f}")
     return guide
@@ -273,7 +273,7 @@ def main():
     loader = FacebookEgoNetwork(data_dir)
 
     # Load a specific ego network (using 0 as an example)
-    ego_id = 107 #0
+    ego_id = 3437 #0
     try:
         G = loader.load_ego_network(ego_id)
         print(
