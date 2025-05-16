@@ -263,7 +263,7 @@ def evaluate(model, guide, X_test, y_test):
     y_pred = (probs > 0.5).float()
     accuracy = (y_pred == y_test).float().mean().item()
     print(f"Accuracy: {accuracy:.4f}")
-
+    return accuracy
 
 def main():
     # Path to the downloaded Facebook data
@@ -273,7 +273,7 @@ def main():
     loader = FacebookEgoNetwork(data_dir)
 
     # Load a specific ego network (using 0 as an example)
-    ego_id = 0
+    ego_id = 107 #0
     try:
         G = loader.load_ego_network(ego_id)
         print(
@@ -288,20 +288,26 @@ def main():
 
         # Initialize Bayesian logistic regression model (sanity check without training)
         model = BayesianLogisticRegression(input_dim=X_train.shape[1])
+        posterior = train_bayesian_lr(model, X_train, y_train)
+        accuracy = evaluate(model=model, guide=posterior, X_test=X_test, y_test=y_test)
+        print(f"Accuracy for ego network node {ego_id}: {accuracy:.4f}")
 
-        # approximate posterior
-        guide = AutoDiagonalNormal(model)
+        # # approximate posterior
+        # guide = AutoDiagonalNormal(model)
 
-        optimizer = pyro.optim.Adam({"lr": 0.01})
-        elbo = Trace_ELBO()
-        svi = SVI(model, guide, optimizer, loss=elbo)
+        # optimizer = pyro.optim.Adam({"lr": 0.01})
+        # elbo = Trace_ELBO()
+        # svi = SVI(model, guide, optimizer, loss=elbo)
 
-        # perform one step of inference
-        try:
-            loss = svi.step(X_train, y_train)
-            print(f"[Sanity Check] Initial ELBO loss after one step: {loss:.4f}")
-        except Exception as e:
-            print(f"[Sanity Check] Failed with error: {e}")
+        # # perform one step of inference
+        # try:
+        #     for i in range(100):
+        #         loss = svi.step(X_train, y_train)
+        #         if i % 10 == 0:
+        #             print(f"[Sanity Check] Initial ELBO loss after {i } steps: {loss:.4f}")
+            
+        # except Exception as e:
+        #     print(f"[Sanity Check] Failed with error: {e}")
 
 
         # uncomment to train and evaluate
