@@ -17,6 +17,9 @@ from pyro.nn import PyroModule, PyroSample
 from pyro.infer import SVI
 from node2vec import Node2Vec
 from sklearn.metrics import roc_auc_score
+from sklearn.metrics import accuracy_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 
 
 
@@ -227,6 +230,7 @@ class FacebookEgoNetwork:
         neg_train, neg_test = train_test_split(
             negative_examples, test_size=test_size, random_state=RANDOM_SEED
         )
+        test_edges = pos_test + neg_test
 
         # Create feature vectors
         # X_train = []
@@ -286,6 +290,7 @@ class FacebookEgoNetwork:
             torch.tensor(y_train, dtype=torch.float),
             torch.stack(X_test),
             torch.tensor(y_test, dtype=torch.float),
+            test_edges
         )
 
 
@@ -314,18 +319,89 @@ def train_bayesian_lr(model, X_train, y_train, num_steps=5000):
             print(f"[Step {step}] Loss: {loss:.4f}")
     return guide
 
-def evaluate(model, guide, X_test, y_test):
+def get_bayesian_model_scores(model, guide, X_test):
+    print("\n--- Evaluating Bayesian Model ---")
     predictive = pyro.infer.Predictive(model, guide=guide, num_samples=1000)
     samples = predictive(X_test)
-    probs = samples["obs"].float().mean(dim=0)
+    return samples["obs"].float().mean(dim=0) # probs in 'evaluate'
 
-    auc = roc_auc_score(y_test.cpu().numpy(), probs.cpu().numpy())
-    print(f"AUC Score: {auc:.4f}")
+def get_heuristic_scores(G, test_edges):
+    print("\n--- Evaluating Heuristic Models ---")
+    scores = {
+        "Adamic-Adar Index": [s for _, _, s in nx.adamic_adar_index(G, test_edges)],
+        "Jaccard Coefficient": [s for _, _, s in nx.jaccard_coefficient(G, test_edges)],
+        "Preferential Attachment": [s for _, _, s in nx.preferential_attachment(G, test_edges)],
+    }
+    return scores
 
-    y_pred = (probs > 0.5).float()
-    accuracy = (y_pred == y_test).float().mean().item()
-    print(f"Accuracy: {accuracy:.4f}")
-    return accuracy
+def get_classic_ml_scores(X_train, y_train, X_test):
+    print("\n--- Evaluating Classic ML Models ---")
+    X_train_np = X_train.cpu().numpy()
+    y_train_np = y_train.cpu().numpy()
+    X_test_np = X_test.cpu().numpy()
+
+    models = {
+        "SKlearn Logistic Regression": LogisticRegression(max_iter=5000, random_state=RANDOM_SEED),
+        "SKlearn Random Forest": RandomForestClassifier(n_estimators=100, random_state=RANDOM_SEED)
+    }
+
+    scores = {}
+    for name, model in models.items():
+        print(f"Training {name}...")
+        model.fit(X_train_np, y_train_np)
+        scores[name] = model.predict_proba(X_test_np)[:, 1]
+      
+    return scores
+
+def evaluate(y_true, y_probs, model_name="Model"):
+    if isinstance(y_true, torch.Tensor):
+        y_true = y_true.cpu().numpy()
+    # if isinstance(y_probs, torch.Tensor):
+    #     y_probs = y_probs.cpu().numpy()
+
+        
+    y_probs = np.asarray(y_probs.cpu() if isinstance(y_probs, torch.Tensor) else y_probs)
+    
+    auc = roc_auc_score(y_true, y_probs)
+    y_pred = (y_probs > 0.5).astype(int)
+    accuracy = accuracy_score(y_true, y_pred)
+    
+    print(f"{model_name:<28} | AUC: {auc:.4f} | Accuracy: {accuracy:.4f}")
+    
+    return auc, accuracy
+
+# def evaluate(model, guide, X_test, y_test):
+#     if isinstance(model, str):
+#         pass
+#     if isinstance(model, BayesianLogisticRegression):
+#         pass
+#     predictive = pyro.infer.Predictive(model, guide=guide, num_samples=1000)
+#     samples = predictive(X_test)
+#     probs = samples["obs"].float().mean(dim=0)
+
+#     auc = roc_auc_score(y_test.cpu().numpy(), probs.cpu().numpy())
+#     print(f"AUC Score: {auc:.4f}")
+
+#     y_pred = (probs > 0.5).float()
+#     accuracy = (y_pred == y_test).float().mean().item()
+#     print(f"Accuracy: {accuracy:.4f}")
+#     return accuracy
+
+def benchmark(model, guide, X_train, y_train, X_test, y_test):
+    heuristics = ['Adamic-Agar', 'Common Neighbors']
+    for heur in heuristics:
+        evaluate(heur, None, X_test, y_test)
+
+    lr_model = LogisticRegression(max_iter=1000, random_state=RANDOM_SEED)
+    lr_model.fit(X_train, y_train)
+    rf_model = RandomForestClassifier(n_estimators=100, random_state=RANDOM_SEED)
+    rf_model.fit(X_train, y_train)
+    ml_models = [lr_model, rf_model]
+    for model in ml_models:
+        evaluate(model, None, X_test, y_test)
+
+    bnn = None
+    return
 
 def main():
     # Path to the downloaded Facebook data
@@ -344,7 +420,7 @@ def main():
 
         # Generate training and testing data
         # X_train, y_train, X_test, y_test = loader.generate_training_data(test_size=0.2)
-        X_train, y_train, X_test, y_test = loader.generate_training_data(
+        X_train, y_train, X_test, y_test, test_edges = loader.generate_training_data(
             test_size=0.2, use_embeddings=True, embedding_dim=16
         )
         print(
@@ -355,8 +431,17 @@ def main():
         # Initialize Bayesian logistic regression model (sanity check without training)
         model = BayesianLogisticRegression(input_dim=X_train.shape[1])
         posterior = train_bayesian_lr(model, X_train, y_train)
-        accuracy = evaluate(model=model, guide=posterior, X_test=X_test, y_test=y_test)
-        print(f"Accuracy for ego network node {ego_id}: {accuracy:.4f}")
+        bayesian_scores = get_bayesian_model_scores(model, posterior, X_test)
+        evaluate(y_test, bayesian_scores, "Bayesian Logistic Regression")
+
+        heuristic_scores = get_heuristic_scores(G, test_edges)
+        for name, scores in heuristic_scores.items():
+            evaluate(y_test, scores, name)
+            
+        # --- Benchmark Classic ML Models ---
+        classic_ml_scores = get_classic_ml_scores(X_train, y_train, X_test)
+        for name, scores in classic_ml_scores.items():
+            evaluate(y_test, scores, name)
 
         # # approximate posterior
         # guide = AutoDiagonalNormal(model)
