@@ -5,6 +5,7 @@ Main file for loading data, training models, and evaluating link prediction
 """
 
 import os
+import copy
 import random
 import numpy as np
 import torch
@@ -359,7 +360,6 @@ def evaluate(y_true, y_probs, model_name="Model"):
     # if isinstance(y_probs, torch.Tensor):
     #     y_probs = y_probs.cpu().numpy()
 
-        
     y_probs = np.asarray(y_probs.cpu() if isinstance(y_probs, torch.Tensor) else y_probs)
     
     auc = roc_auc_score(y_true, y_probs)
@@ -403,6 +403,57 @@ def benchmark(model, guide, X_train, y_train, X_test, y_test):
     bnn = None
     return
 
+def edge_recovery_evaluation(loader, model, guide, ego_id, fraction=0.5):
+    """
+    Sever a fraction of edges in the given ego network, predict edges, and evaluate recovery.
+
+    Args:
+        loader: FacebookEgoNetwork instance
+        model: Trained BayesianLogisticRegression model
+        guide: Posterior guide from training
+        ego_id: Ego node ID
+        fraction: Fraction of edges to remove 
+
+    Returns:
+        recovery_rate: Fraction of removed edges correctly predicted as present
+    """
+
+    if fraction <= 0 or fraction >= 1:
+        raise ValueError("Fraction must be between 0 and 1.")
+    
+    # Load the ego network
+    G = loader.load_ego_network(ego_id)
+    edges = list(G.edges())
+    num_remove = int(len(edges) * fraction)
+    removed_edges = random.sample(edges, num_remove)
+
+    # Create a copy of the graph and remove edges
+    G_severed = copy.deepcopy(G)
+    G_severed.remove_edges_from(removed_edges)
+
+    # For each removed edge, extract features and predict
+    X_removed = []
+    for u, v in removed_edges:
+        # Only predict if both nodes still exist in the graph
+        if G_severed.has_node(u) and G_severed.has_node(v):
+            loader.graph = G_severed  
+            X_removed.append(loader.extract_link_features(u, v))
+
+    X_removed = torch.stack(X_removed)
+    predictive = pyro.infer.Predictive(model, guide=guide, num_samples=500)
+    samples = predictive(X_removed)
+    probs = samples["obs"].float().mean(dim=0)
+    y_pred = (probs > 0.5).float()
+
+    # all are true edges so label is 1
+    recovery_rate = y_pred.sum().item() / len(y_pred)
+    print(f"Edge recovery rate for ego {ego_id}: {recovery_rate:.4f} ({int(y_pred.sum().item())}/{len(y_pred)})")
+
+    # restore original graph
+    loader.graph = G
+    return recovery_rate
+
+
 def main():
     # Path to the downloaded Facebook data
     data_dir = "./data/facebook"
@@ -411,7 +462,7 @@ def main():
     loader = FacebookEgoNetwork(data_dir)
 
     # Load a specific ego network (using 0 as an example)
-    ego_id = 3437 #0
+    ego_id = 3980 #0
     try:
         G = loader.load_ego_network(ego_id)
         print(
@@ -433,6 +484,10 @@ def main():
         posterior = train_bayesian_lr(model, X_train, y_train)
         bayesian_scores = get_bayesian_model_scores(model, posterior, X_test)
         evaluate(y_test, bayesian_scores, "Bayesian Logistic Regression")
+
+        # --- Edge Recovery Evaluation ---
+        print("\n--- Edge Recovery Evaluation ---")
+        edge_recovery_evaluation(loader, model, posterior, ego_id, fraction=0.2)
 
         heuristic_scores = get_heuristic_scores(G, test_edges)
         for name, scores in heuristic_scores.items():
