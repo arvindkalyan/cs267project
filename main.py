@@ -15,6 +15,8 @@ import networkx as nx
 from sklearn.model_selection import train_test_split
 from pyro.nn import PyroModule, PyroSample
 from pyro.infer import SVI
+from node2vec import Node2Vec
+
 
 # For sanity check without training:
 from pyro.infer.autoguide import AutoDiagonalNormal
@@ -44,6 +46,18 @@ class FacebookEgoNetwork:
         self.ego_features = {}
         self.feature_names = {}
         self.circles = {}
+
+    def compute_node2vec_embeddings(self, dimensions=16):
+        if self.graph is None:
+            raise ValueError("Graph not loaded. Call load_ego_network first.")
+        
+        print("Computing Node2Vec embeddings...")
+        node2vec = Node2Vec(self.graph, dimensions=dimensions, walk_length=20, num_walks=100, workers=2)
+        model = node2vec.fit(window=10, min_count=1, batch_words=4)
+
+        # Store embeddings as {node_id: torch.tensor}
+        embeddings = {int(node): torch.tensor(model.wv[node], dtype=torch.float) for node in model.wv.index_to_key}
+        return embeddings
 
     def load_ego_network(self, ego_id):
         """
@@ -159,7 +173,19 @@ class FacebookEgoNetwork:
             [common_neighbors, jaccard, aa_index, pref_attachment], dtype=torch.float
         )
 
-    def generate_training_data(self, test_size=0.2):
+    def extract_link_features_with_embeddings(self, node1, node2, embeddings):
+        base_features = self.extract_link_features(node1, node2)
+
+        emb1 = embeddings.get(node1, torch.zeros(embeddings[next(iter(embeddings))].shape))
+        emb2 = embeddings.get(node2, torch.zeros(emb1.shape))
+
+        # Concatenate embedding features: [emb1, emb2, |emb1 - emb2|]
+        emb_features = torch.cat([emb1, emb2, torch.abs(emb1 - emb2)])
+        return torch.cat([base_features, emb_features])
+
+
+    # def generate_training_data(self, test_size=0.2):
+    def generate_training_data(self, test_size=0.2, use_embeddings=True, embedding_dim=16):
         """
         Generate training and testing data for link prediction
 
@@ -173,6 +199,8 @@ class FacebookEgoNetwork:
             raise ValueError("No graph loaded. Call load_ego_network first.")
 
         G = self.graph
+        # Use embeddings
+        embeddings = self.compute_node2vec_embeddings(dimensions=embedding_dim) if use_embeddings else None
 
         # Generate positive examples (existing edges)
         positive_examples = list(G.edges())
@@ -199,35 +227,64 @@ class FacebookEgoNetwork:
         )
 
         # Create feature vectors
-        X_train = []
-        y_train = []
+        # X_train = []
+        # y_train = []
+
+        # for edge in pos_train:
+        #     X_train.append(self.extract_link_features(edge[0], edge[1]))
+        #     y_train.append(1)
+
+        # for edge in neg_train:
+        #     X_train.append(self.extract_link_features(edge[0], edge[1]))
+        #     y_train.append(0)
+
+        # X_test = []
+        # y_test = []
+
+        # for edge in pos_test:
+        #     X_test.append(self.extract_link_features(edge[0], edge[1]))
+        #     y_test.append(1)
+
+        # for edge in neg_test:
+        #     X_test.append(self.extract_link_features(edge[0], edge[1]))
+        #     y_test.append(0)
+
+        # # Convert to tensors
+        # X_train = torch.stack(X_train)
+        # y_train = torch.tensor(y_train, dtype=torch.float)
+        # X_test = torch.stack(X_test)
+        # y_test = torch.tensor(y_test, dtype=torch.float)
+
+        # return X_train, y_train, X_test, y_test
+        # Create feature vectors
+        X_train, y_train, X_test, y_test = [], [], [], []
+
+        extractor = (
+            lambda u, v: self.extract_link_features_with_embeddings(u, v, embeddings)
+            if use_embeddings else
+            self.extract_link_features
+        )
 
         for edge in pos_train:
-            X_train.append(self.extract_link_features(edge[0], edge[1]))
+            X_train.append(extractor(edge[0], edge[1]))
             y_train.append(1)
-
         for edge in neg_train:
-            X_train.append(self.extract_link_features(edge[0], edge[1]))
+            X_train.append(extractor(edge[0], edge[1]))
             y_train.append(0)
 
-        X_test = []
-        y_test = []
-
         for edge in pos_test:
-            X_test.append(self.extract_link_features(edge[0], edge[1]))
+            X_test.append(extractor(edge[0], edge[1]))
             y_test.append(1)
-
         for edge in neg_test:
-            X_test.append(self.extract_link_features(edge[0], edge[1]))
+            X_test.append(extractor(edge[0], edge[1]))
             y_test.append(0)
 
-        # Convert to tensors
-        X_train = torch.stack(X_train)
-        y_train = torch.tensor(y_train, dtype=torch.float)
-        X_test = torch.stack(X_test)
-        y_test = torch.tensor(y_test, dtype=torch.float)
-
-        return X_train, y_train, X_test, y_test
+        return (
+            torch.stack(X_train),
+            torch.tensor(y_train, dtype=torch.float),
+            torch.stack(X_test),
+            torch.tensor(y_test, dtype=torch.float),
+        )
 
 
 class BayesianLogisticRegression(PyroModule):
@@ -281,10 +338,14 @@ def main():
         )
 
         # Generate training and testing data
-        X_train, y_train, X_test, y_test = loader.generate_training_data(test_size=0.2)
+        # X_train, y_train, X_test, y_test = loader.generate_training_data(test_size=0.2)
+        X_train, y_train, X_test, y_test = loader.generate_training_data(
+            test_size=0.2, use_embeddings=True, embedding_dim=16
+        )
         print(
             f"Generated {len(X_train)} training examples and {len(X_test)} testing examples"
         )
+
 
         # Initialize Bayesian logistic regression model (sanity check without training)
         model = BayesianLogisticRegression(input_dim=X_train.shape[1])
