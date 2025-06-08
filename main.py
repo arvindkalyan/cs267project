@@ -16,6 +16,8 @@ from sklearn.model_selection import train_test_split
 from pyro.nn import PyroModule, PyroSample
 from pyro.infer import SVI
 from node2vec import Node2Vec
+from sklearn.metrics import roc_auc_score
+
 
 
 # For sanity check without training:
@@ -316,6 +318,9 @@ def evaluate(model, guide, X_test, y_test):
     predictive = pyro.infer.Predictive(model, guide=guide, num_samples=1000)
     samples = predictive(X_test)
     probs = samples["obs"].float().mean(dim=0)
+
+    auc = roc_auc_score(y_test.cpu().numpy(), probs.cpu().numpy())
+    print(f"AUC Score: {auc:.4f}")
 
     y_pred = (probs > 0.5).float()
     accuracy = (y_pred == y_test).float().mean().item()
