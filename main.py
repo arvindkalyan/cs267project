@@ -403,7 +403,7 @@ def benchmark(model, guide, X_train, y_train, X_test, y_test):
     bnn = None
     return
 
-def edge_recovery_evaluation(loader, model, guide, ego_id, fraction=0.5):
+def edge_recovery_evaluation(loader, model, guide, ego_id, fraction=0.5, use_embeddings=True, embedding_dim=16):
     """
     Sever a fraction of edges in the given ego network, predict edges, and evaluate recovery.
 
@@ -412,7 +412,6 @@ def edge_recovery_evaluation(loader, model, guide, ego_id, fraction=0.5):
         model: Trained BayesianLogisticRegression model
         guide: Posterior guide from training
         ego_id: Ego node ID
-        fraction: Fraction of edges to remove 
 
     Returns:
         recovery_rate: Fraction of removed edges correctly predicted as present
@@ -430,14 +429,22 @@ def edge_recovery_evaluation(loader, model, guide, ego_id, fraction=0.5):
     # Create a copy of the graph and remove edges
     G_severed = copy.deepcopy(G)
     G_severed.remove_edges_from(removed_edges)
+    loader.graph = G_severed  
+
+    embeddings = loader.compute_node2vec_embeddings(dimensions=embedding_dim) if use_embeddings else None
+    # Choose extractor
+    extractor = (
+        lambda u, v: loader.extract_link_features_with_embeddings(u, v, embeddings)
+        if use_embeddings else
+        loader.extract_link_features
+    )
 
     # For each removed edge, extract features and predict
     X_removed = []
     for u, v in removed_edges:
         # Only predict if both nodes still exist in the graph
         if G_severed.has_node(u) and G_severed.has_node(v):
-            loader.graph = G_severed  
-            X_removed.append(loader.extract_link_features(u, v))
+            X_removed.append(extractor(u, v))
 
     X_removed = torch.stack(X_removed)
     predictive = pyro.infer.Predictive(model, guide=guide, num_samples=500)
