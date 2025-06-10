@@ -21,7 +21,7 @@ from sklearn.metrics import roc_auc_score
 from sklearn.metrics import accuracy_score
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-
+from enhanced_visualization import comprehensive_link_prediction_analysis
 
 
 # For sanity check without training:
@@ -56,13 +56,18 @@ class FacebookEgoNetwork:
     def compute_node2vec_embeddings(self, dimensions=16):
         if self.graph is None:
             raise ValueError("Graph not loaded. Call load_ego_network first.")
-        
+
         print("Computing Node2Vec embeddings...")
-        node2vec = Node2Vec(self.graph, dimensions=dimensions, walk_length=20, num_walks=100, workers=2)
+        node2vec = Node2Vec(
+            self.graph, dimensions=dimensions, walk_length=20, num_walks=100, workers=2
+        )
         model = node2vec.fit(window=10, min_count=1, batch_words=4)
 
         # Store embeddings as {node_id: torch.tensor}
-        embeddings = {int(node): torch.tensor(model.wv[node], dtype=torch.float) for node in model.wv.index_to_key}
+        embeddings = {
+            int(node): torch.tensor(model.wv[node], dtype=torch.float)
+            for node in model.wv.index_to_key
+        }
         return embeddings
 
     def load_ego_network(self, ego_id):
@@ -182,16 +187,19 @@ class FacebookEgoNetwork:
     def extract_link_features_with_embeddings(self, node1, node2, embeddings):
         base_features = self.extract_link_features(node1, node2)
 
-        emb1 = embeddings.get(node1, torch.zeros(embeddings[next(iter(embeddings))].shape))
+        emb1 = embeddings.get(
+            node1, torch.zeros(embeddings[next(iter(embeddings))].shape)
+        )
         emb2 = embeddings.get(node2, torch.zeros(emb1.shape))
 
         # Concatenate embedding features: [emb1, emb2, |emb1 - emb2|]
         emb_features = torch.cat([emb1, emb2, torch.abs(emb1 - emb2)])
         return torch.cat([base_features, emb_features])
 
-
     # def generate_training_data(self, test_size=0.2):
-    def generate_training_data(self, test_size=0.2, use_embeddings=True, embedding_dim=16):
+    def generate_training_data(
+        self, test_size=0.2, use_embeddings=True, embedding_dim=16
+    ):
         """
         Generate training and testing data for link prediction
 
@@ -206,7 +214,11 @@ class FacebookEgoNetwork:
 
         G = self.graph
         # Use embeddings
-        embeddings = self.compute_node2vec_embeddings(dimensions=embedding_dim) if use_embeddings else None
+        embeddings = (
+            self.compute_node2vec_embeddings(dimensions=embedding_dim)
+            if use_embeddings
+            else None
+        )
 
         # Generate positive examples (existing edges)
         positive_examples = list(G.edges())
@@ -266,10 +278,10 @@ class FacebookEgoNetwork:
         # Create feature vectors
         X_train, y_train, X_test, y_test = [], [], [], []
 
-        extractor = (
-            lambda u, v: self.extract_link_features_with_embeddings(u, v, embeddings)
-            if use_embeddings else
-            self.extract_link_features
+        extractor = lambda u, v: (
+            self.extract_link_features_with_embeddings(u, v, embeddings)
+            if use_embeddings
+            else self.extract_link_features
         )
 
         for edge in pos_train:
@@ -291,7 +303,7 @@ class FacebookEgoNetwork:
             torch.tensor(y_train, dtype=torch.float),
             torch.stack(X_test),
             torch.tensor(y_test, dtype=torch.float),
-            test_edges
+            test_edges,
         )
 
 
@@ -299,14 +311,17 @@ class BayesianLogisticRegression(PyroModule):
     def __init__(self, input_dim):
         super().__init__()
         self.linear = PyroModule[nn.Linear](input_dim, 1)
-        self.linear.weight = PyroSample(dist.Normal(0., 1.).expand([1, input_dim]).to_event(2))
-        self.linear.bias = PyroSample(dist.Normal(0., 10.).expand([1]).to_event(1))
+        self.linear.weight = PyroSample(
+            dist.Normal(0.0, 1.0).expand([1, input_dim]).to_event(2)
+        )
+        self.linear.bias = PyroSample(dist.Normal(0.0, 10.0).expand([1]).to_event(1))
 
     def forward(self, x, y=None):
         logits = self.linear(x).squeeze(-1)
         with pyro.plate("data", x.shape[0]):
             obs = pyro.sample("obs", dist.Bernoulli(logits=logits), obs=y)
         return logits
+
 
 def train_bayesian_lr(model, X_train, y_train, num_steps=5000):
     guide = pyro.infer.autoguide.AutoDiagonalNormal(model)
@@ -320,20 +335,25 @@ def train_bayesian_lr(model, X_train, y_train, num_steps=5000):
             print(f"[Step {step}] Loss: {loss:.4f}")
     return guide
 
+
 def get_bayesian_model_scores(model, guide, X_test):
     print("\n--- Evaluating Bayesian Model ---")
     predictive = pyro.infer.Predictive(model, guide=guide, num_samples=1000)
     samples = predictive(X_test)
-    return samples["obs"].float().mean(dim=0) # probs in 'evaluate'
+    return samples["obs"].float().mean(dim=0)  # probs in 'evaluate'
+
 
 def get_heuristic_scores(G, test_edges):
     print("\n--- Evaluating Heuristic Models ---")
     scores = {
         "Adamic-Adar Index": [s for _, _, s in nx.adamic_adar_index(G, test_edges)],
         "Jaccard Coefficient": [s for _, _, s in nx.jaccard_coefficient(G, test_edges)],
-        "Preferential Attachment": [s for _, _, s in nx.preferential_attachment(G, test_edges)],
+        "Preferential Attachment": [
+            s for _, _, s in nx.preferential_attachment(G, test_edges)
+        ],
     }
     return scores
+
 
 def get_classic_ml_scores(X_train, y_train, X_test):
     print("\n--- Evaluating Classic ML Models ---")
@@ -342,8 +362,12 @@ def get_classic_ml_scores(X_train, y_train, X_test):
     X_test_np = X_test.cpu().numpy()
 
     models = {
-        "SKlearn Logistic Regression": LogisticRegression(max_iter=5000, random_state=RANDOM_SEED),
-        "SKlearn Random Forest": RandomForestClassifier(n_estimators=100, random_state=RANDOM_SEED)
+        "SKlearn Logistic Regression": LogisticRegression(
+            max_iter=5000, random_state=RANDOM_SEED
+        ),
+        "SKlearn Random Forest": RandomForestClassifier(
+            n_estimators=100, random_state=RANDOM_SEED
+        ),
     }
 
     scores = {}
@@ -351,8 +375,9 @@ def get_classic_ml_scores(X_train, y_train, X_test):
         print(f"Training {name}...")
         model.fit(X_train_np, y_train_np)
         scores[name] = model.predict_proba(X_test_np)[:, 1]
-      
+
     return scores
+
 
 def evaluate(y_true, y_probs, model_name="Model"):
     if isinstance(y_true, torch.Tensor):
@@ -360,15 +385,18 @@ def evaluate(y_true, y_probs, model_name="Model"):
     # if isinstance(y_probs, torch.Tensor):
     #     y_probs = y_probs.cpu().numpy()
 
-    y_probs = np.asarray(y_probs.cpu() if isinstance(y_probs, torch.Tensor) else y_probs)
-    
+    y_probs = np.asarray(
+        y_probs.cpu() if isinstance(y_probs, torch.Tensor) else y_probs
+    )
+
     auc = roc_auc_score(y_true, y_probs)
     y_pred = (y_probs > 0.5).astype(int)
     accuracy = accuracy_score(y_true, y_pred)
-    
+
     print(f"{model_name:<28} | AUC: {auc:.4f} | Accuracy: {accuracy:.4f}")
-    
+
     return auc, accuracy
+
 
 # def evaluate(model, guide, X_test, y_test):
 #     if isinstance(model, str):
@@ -387,8 +415,9 @@ def evaluate(y_true, y_probs, model_name="Model"):
 #     print(f"Accuracy: {accuracy:.4f}")
 #     return accuracy
 
+
 def benchmark(model, guide, X_train, y_train, X_test, y_test):
-    heuristics = ['Adamic-Agar', 'Common Neighbors']
+    heuristics = ["Adamic-Agar", "Common Neighbors"]
     for heur in heuristics:
         evaluate(heur, None, X_test, y_test)
 
@@ -403,7 +432,10 @@ def benchmark(model, guide, X_train, y_train, X_test, y_test):
     bnn = None
     return
 
-def edge_recovery_evaluation(loader, model, guide, ego_id, fraction=0.5, use_embeddings=True, embedding_dim=16):
+
+def edge_recovery_evaluation(
+    loader, model, guide, ego_id, fraction=0.5, use_embeddings=True, embedding_dim=16
+):
     """
     Sever a fraction of edges in the given ego network, predict edges, and evaluate recovery.
 
@@ -419,7 +451,7 @@ def edge_recovery_evaluation(loader, model, guide, ego_id, fraction=0.5, use_emb
 
     if fraction <= 0 or fraction >= 1:
         raise ValueError("Fraction must be between 0 and 1.")
-    
+
     # Load the ego network
     G = loader.load_ego_network(ego_id)
     edges = list(G.edges())
@@ -429,14 +461,18 @@ def edge_recovery_evaluation(loader, model, guide, ego_id, fraction=0.5, use_emb
     # Create a copy of the graph and remove edges
     G_severed = copy.deepcopy(G)
     G_severed.remove_edges_from(removed_edges)
-    loader.graph = G_severed  
+    loader.graph = G_severed
 
-    embeddings = loader.compute_node2vec_embeddings(dimensions=embedding_dim) if use_embeddings else None
+    embeddings = (
+        loader.compute_node2vec_embeddings(dimensions=embedding_dim)
+        if use_embeddings
+        else None
+    )
     # Choose extractor
-    extractor = (
-        lambda u, v: loader.extract_link_features_with_embeddings(u, v, embeddings)
-        if use_embeddings else
-        loader.extract_link_features
+    extractor = lambda u, v: (
+        loader.extract_link_features_with_embeddings(u, v, embeddings)
+        if use_embeddings
+        else loader.extract_link_features
     )
 
     # For each removed edge, extract features and predict
@@ -454,7 +490,9 @@ def edge_recovery_evaluation(loader, model, guide, ego_id, fraction=0.5, use_emb
 
     # all are true edges so label is 1
     recovery_rate = y_pred.sum().item() / len(y_pred)
-    print(f"Edge recovery rate for ego {ego_id}: {recovery_rate:.4f} ({int(y_pred.sum().item())}/{len(y_pred)})")
+    print(
+        f"Edge recovery rate for ego {ego_id}: {recovery_rate:.4f} ({int(y_pred.sum().item())}/{len(y_pred)})"
+    )
 
     # restore original graph
     loader.graph = G
@@ -469,7 +507,7 @@ def main():
     loader = FacebookEgoNetwork(data_dir)
 
     # Load a specific ego network (using 0 as an example)
-    ego_id = 3980 #0
+    ego_id = 3980  # 0
     try:
         G = loader.load_ego_network(ego_id)
         print(
@@ -485,12 +523,13 @@ def main():
             f"Generated {len(X_train)} training examples and {len(X_test)} testing examples"
         )
 
-
         # Initialize Bayesian logistic regression model (sanity check without training)
         model = BayesianLogisticRegression(input_dim=X_train.shape[1])
         posterior = train_bayesian_lr(model, X_train, y_train)
         bayesian_scores = get_bayesian_model_scores(model, posterior, X_test)
         evaluate(y_test, bayesian_scores, "Bayesian Logistic Regression")
+
+        comprehensive_link_prediction_analysis(loader, model, posterior, ego_id)
 
         # --- Edge Recovery Evaluation ---
         print("\n--- Edge Recovery Evaluation ---")
@@ -499,7 +538,7 @@ def main():
         heuristic_scores = get_heuristic_scores(G, test_edges)
         for name, scores in heuristic_scores.items():
             evaluate(y_test, scores, name)
-            
+
         # --- Benchmark Classic ML Models ---
         classic_ml_scores = get_classic_ml_scores(X_train, y_train, X_test)
         for name, scores in classic_ml_scores.items():
@@ -518,10 +557,9 @@ def main():
         #         loss = svi.step(X_train, y_train)
         #         if i % 10 == 0:
         #             print(f"[Sanity Check] Initial ELBO loss after {i } steps: {loss:.4f}")
-            
+
         # except Exception as e:
         #     print(f"[Sanity Check] Failed with error: {e}")
-
 
         # uncomment to train and evaluate
         # guide = train_bayesian_lr(model, X_train, y_train, num_steps=1000)
