@@ -22,7 +22,9 @@ from sklearn.metrics import accuracy_score
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from enhanced_visualization import comprehensive_link_prediction_analysis
-
+import seaborn as sns
+import matplotlib.pyplot as plt
+import pandas as pd
 
 # For sanity check without training:
 from pyro.infer.autoguide import AutoDiagonalNormal
@@ -35,6 +37,133 @@ np.random.seed(RANDOM_SEED)
 torch.manual_seed(RANDOM_SEED)
 pyro.set_rng_seed(RANDOM_SEED)
 
+# --- NEW SEABORN PLOTTING FUNCTION ---
+def plot_benchmarks(results):
+    """
+    Creates and saves color-coded bar charts for benchmark results using seaborn.
+    
+    Args:
+        results (dict): A dictionary mapping model names to (AUC, Accuracy) tuples.
+    """
+    print("\n--- Generating Benchmark Plots with Seaborn ---")
+
+    # 1. Convert results dictionary to a Pandas DataFrame
+    plot_data = []
+    for name, (auc, acc) in results.items():
+        if 'Bayesian' in name:
+            model_type = 'Bayesian'
+        elif 'SKlearn' in name:
+            model_type = 'Classic ML'
+        else:
+            model_type = 'Heuristic'
+        plot_data.append({'Model': name, 'AUC': auc, 'Accuracy': acc, 'Type': model_type})
+    
+    df = pd.DataFrame(plot_data)
+
+    # 2. Reusable plotting function for a given metric
+    def _create_and_save_seaborn_plot(data_df, metric, filename):
+        # Sort the DataFrame by the metric for a clean plot
+        sorted_df = data_df.sort_values(by=metric, ascending=False)
+        
+        plt.figure(figsize=(12, 9))
+        
+        # Create the bar plot using seaborn
+        ax = sns.barplot(x=metric, y='Model', data=sorted_df, hue='Type', dodge=False, palette='viridis')
+        
+        # Customize plot aesthetics
+        ax.set_title(f'Link Prediction Benchmark: {metric}', fontsize=18, fontweight='bold', pad=20)
+        ax.set_xlabel(f'{metric} Score', fontsize=14)
+        ax.set_ylabel('Model', fontsize=14)
+        
+        # --- FIX: Dynamic Axis Limits ---
+        # Set a reasonable left limit and give 10% padding on the right
+        max_score = data_df[metric].max()
+        ax.set_xlim(left=0.75, right=max_score * 1.10)
+        
+        # --- FIX: Smarter Data Labels ---
+        # Iterate through the bars to add text labels INSIDE them
+        for p in ax.patches:
+            width = p.get_width()
+            # Only add label if the bar has a positive width
+            if width > 0:
+                ax.text(width - 0.005,  # x position (just inside the bar)
+                        p.get_y() + p.get_height() / 2, # y position
+                        f'{width:.4f}', # label text
+                        va='center',    # vertical alignment
+                        ha='right',     # horizontal alignment
+                        color='white',  # text color
+                        fontweight='bold',
+                        fontsize=12)
+        
+        plt.legend(title='Model Type', loc='lower right', fontsize=12)
+        plt.tight_layout()
+        
+        # Save the figure
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Saved plot to {filename}")
+        plt.show()
+
+    # 3. Generate and save plots for both metrics
+    _create_and_save_seaborn_plot(df, "AUC", "ROC_AUC.png")
+    _create_and_save_seaborn_plot(df, "Accuracy", "accuracy_benchmark.png")
+    """
+    Creates and saves color-coded bar charts for benchmark results using seaborn.
+    
+    Args:
+        results (dict): A dictionary mapping model names to (AUC, Accuracy) tuples.
+    """
+    print("\n--- Generating Benchmark Plots with Seaborn ---")
+
+    # --- 1. Convert results dictionary to a Pandas DataFrame ---
+    # This is the standard way to supply data to Seaborn
+    plot_data = []
+    for name, (auc, acc) in results.items():
+        if 'Bayesian' in name:
+            model_type = 'Bayesian'
+        elif 'SKlearn' in name:
+            model_type = 'Classic ML'
+        else:
+            model_type = 'Heuristic'
+        plot_data.append({'Model': name, 'AUC': auc, 'Accuracy': acc, 'Type': model_type})
+    
+    df = pd.DataFrame(plot_data)
+
+    # --- 2. Reusable plotting function for a given metric ---
+    def _create_and_save_seaborn_plot(data_df, metric, filename):
+        # Sort the DataFrame by the metric for a clean plot
+        sorted_df = data_df.sort_values(by=metric, ascending=False)
+        
+        plt.figure(figsize=(12, 8))
+        
+        # Create the bar plot using seaborn
+        ax = sns.barplot(x=metric, y='Model', data=sorted_df, hue='Type', dodge=False)
+        
+        # Customize plot aesthetics
+        ax.set_title(f'Link Prediction Benchmark: {metric}', fontsize=16, fontweight='bold')
+        ax.set_xlabel(f'{metric} Score', fontsize=12)
+        ax.set_ylabel('Model', fontsize=12)
+        ax.set_xlim(left=min(0.8, data_df[metric].min() * 0.95)) # Adjust x-axis
+        
+        # Add data labels to each bar
+        for p in ax.patches:
+            width = p.get_width()
+            ax.text(width + 0.001,  # x position
+                    p.get_y() + p.get_height() / 2,  # y position
+                    f'{width:.4f}',  # label text
+                    va='center',     # vertical alignment
+                    ha='left')       # horizontal alignment
+        
+        plt.legend(title='Model Type', loc='lower right')
+        plt.tight_layout()
+        
+        # Save the figure
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Saved plot to {filename}")
+        plt.show()
+
+    # --- 3. Generate and save plots for both metrics ---
+    _create_and_save_seaborn_plot(df, "AUC", "ROC_AUC.png")
+    _create_and_save_seaborn_plot(df, "Accuracy", "accuracy_benchmark.png")
 
 class FacebookEgoNetwork:
     """Loader for Facebook ego network data"""
@@ -505,7 +634,7 @@ def main():
 
     # Initialize data loader
     loader = FacebookEgoNetwork(data_dir)
-
+    benchmark_results = {}
     # Load a specific ego network (using 0 as an example)
     ego_id = 3980  # 0
     try:
@@ -527,7 +656,7 @@ def main():
         model = BayesianLogisticRegression(input_dim=X_train.shape[1])
         posterior = train_bayesian_lr(model, X_train, y_train)
         bayesian_scores = get_bayesian_model_scores(model, posterior, X_test)
-        evaluate(y_test, bayesian_scores, "Bayesian Logistic Regression")
+        benchmark_results["Bayesian Logistic Regression"] = evaluate(y_test, bayesian_scores, "Bayesian Logistic Regression")
 
         comprehensive_link_prediction_analysis(loader, model, posterior, ego_id)
 
@@ -537,13 +666,13 @@ def main():
 
         heuristic_scores = get_heuristic_scores(G, test_edges)
         for name, scores in heuristic_scores.items():
-            evaluate(y_test, scores, name)
+            benchmark_results[name] = evaluate(y_test, scores, name)
 
         # --- Benchmark Classic ML Models ---
         classic_ml_scores = get_classic_ml_scores(X_train, y_train, X_test)
         for name, scores in classic_ml_scores.items():
-            evaluate(y_test, scores, name)
-
+            benchmark_results[name] = evaluate(y_test, scores, name)
+        plot_benchmarks(benchmark_results)
         # # approximate posterior
         # guide = AutoDiagonalNormal(model)
 
