@@ -7,7 +7,6 @@ import os
 import sys
 import glob
 import tarfile
-import shutil
 
 
 def extract_and_organize_data(
