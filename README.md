@@ -1,6 +1,4 @@
 # cs267project
-aw hell nah
-
 Instructions to run:
 ```
 git clone https://github.com/arvindkalyan/cs267project.git              
